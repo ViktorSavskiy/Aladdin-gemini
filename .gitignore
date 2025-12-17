@@ -1,0 +1,61 @@
+# --- Данные и БД ---
+data/
+database/
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.xlsx
+*.json
+# Исключаем файлы отчетов, если они вдруг сохранятся не в data
+reports/
+
+# --- Секреты и Конфигурация (КРИТИЧНО) ---
+config/credentials.py
+credentials.py
+.env
+.env.local
+.env.*.local
+
+# --- Логи ---
+logs/
+*.log
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+# Файлы дистрибуции (если вдруг решите упаковать проект)
+dist/
+build/
+*.egg-info/
+
+# --- Виртуальное окружение ---
+venv/
+env/
+.venv/
+ENV/
+
+# --- IDE и Редакторы ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Jupyter Notebooks (часто используются в анализе данных) ---
+.ipynb_checkpoints
+*-checkpoint.ipynb
+
+# --- Тестирование (на будущее) ---
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Операционные системы ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# --- Временные файлы ---
+temp/
+tmp/
