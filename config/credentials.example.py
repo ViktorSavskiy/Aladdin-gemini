@@ -41,3 +41,26 @@ PROXY = None
 #     "http": "http://user:pass@1.2.3.4:8080",
 #     "https": "http://user:pass@1.2.3.4:8080",
 # }
+
+"""
+ШАБЛОН КОНФИГУРАЦИИ ДОСТУПОВ
+Скопируйте в credentials.py
+"""
+
+# --- On-Chain Источники (НОВОЕ) ---
+
+# Glassnode (https://glassnode.com) - Лучший, но дорогой
+GLASSNODE_API_KEY = None
+
+# Bitquery (https://bitquery.io) - Хорош для DEX
+BITQUERY_API_KEY = None
+
+# CryptoQuant (https://cryptoquant.com) - Потоки бирж
+CRYPTOQUANT_API_KEY = None
+
+# Messari (https://messari.io) - Фундаментальные метрики (есть Free tier)
+MESSARI_API_KEY = None 
+
+# --- Уведомления ---
+TELEGRAM_BOT_TOKEN = None
+TELEGRAM_CHAT_ID = None

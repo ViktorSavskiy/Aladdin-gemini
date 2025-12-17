@@ -1,0 +1,17 @@
+"""
+Data Pipeline модуль для сбора и обработки данных криптовалют
+"""
+
+from .data_fetcher import DataFetcher
+from .data_processor import DataProcessor
+from .database_handler import DatabaseHandler
+from .filters import DataFilter
+from .onchain_fetcher import OnChainFetcher  # Добавляем новый класс
+
+__all__ = [
+    'DataFetcher',
+    'DataProcessor',
+    'DatabaseHandler',
+    'DataFilter',
+    'OnChainFetcher'  # Добавляем в экспорт
+]
