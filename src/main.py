@@ -1,190 +1,237 @@
 import sys
 import pandas as pd
+import numpy as np
 from pathlib import Path
+from datetime import datetime
 
-# Добавляем корневую директорию в PYTHONPATH
-current_dir = Path(__file__).resolve().parent
-root_dir = current_dir.parent if current_dir.name == 'src' else current_dir
-sys.path.append(str(root_dir))
+# --- Настройка путей для импорта ---
+current_dir = Path(__file__).resolve().parent.parent
+sys.path.append(str(current_dir))
 
+# --- Импорты конфигурации ---
 from config.settings import Config
+
+# --- Импорты Модуля 1 (Data Pipeline) ---
 from src.data_pipeline.data_fetcher import DataFetcher
+from src.data_pipeline.specific_fetcher import CategoryFetcher
 from src.data_pipeline.filters import DataFilter
 from src.data_pipeline.data_processor import DataProcessor
 from src.data_pipeline.database_handler import DatabaseHandler
+
+# --- Импорты Модуля 2 (Scoring Engine) ---
+from src.scoring_engine.factor_calculator import FactorCalculator
+from src.scoring_engine.strategy_loader import StrategyLoader
+from src.scoring_engine.score_calculator import ScoreCalculator
+from src.scoring_engine.ranking import AssetRanker
+from src.scoring_engine.market_regime import MarketRegimeDetector
+
+# --- Импорты Бэктестинга ---
+from src.backtesting.engine import BacktestEngine
+
+# --- Утилиты ---
 from src.utils.logger import logger
 
 class CryptoAladdinPipeline:
     """
-    Главный оркестратор: Сбор -> Фильтрация -> История + OnChain -> Метрики -> База -> Отчет
+    Главный оркестратор системы Crypto Aladdin.
+    Управляет потоками данных, оценкой активов и симуляцией торговли.
     """
     
     def __init__(self):
+        # 1. Инициализация компонентов данных
         self.fetcher = DataFetcher()
+        self.specific_fetcher = CategoryFetcher()  # DefiLlama & Categories
         self.filter = DataFilter()
         self.processor = DataProcessor()
         self.db_handler = DatabaseHandler()
         
+        # 2. Инициализация компонентов оценки
+        self.strategy_loader = StrategyLoader()
+        self.score_calculator = ScoreCalculator(self.strategy_loader)
+
     def _ensure_btc_history(self, historical_data: dict, coin_ids: list) -> dict:
-        """Гарантирует наличие истории BTC для расчета корреляции."""
-        btc_id = 'bitcoin'
-        if btc_id not in historical_data:
-            logger.info("BTC отсутствует в списке. Загружаем историю BTC для корреляции...")
-            btc_data = self.fetcher.fetch_historical_data(btc_id, days=Config.HISTORICAL_DAYS)
+        """Гарантирует наличие истории BTC (нужно для корреляции и режима рынка)"""
+        if 'bitcoin' not in historical_data:
+            logger.info("BTC отсутствует в выборке. Загружаем историю BTC отдельно...")
+            # Используем max для глубокой истории или значение из конфига
+            btc_data = self.fetcher.fetch_historical_data('bitcoin', days=Config.HISTORICAL_DAYS)
             if not btc_data.empty:
-                historical_data[btc_id] = btc_data
+                historical_data['bitcoin'] = btc_data
         return historical_data
 
-    def run_full_pipeline(self):
-        """Запуск полного цикла обновления данных"""
+    def run_full_pipeline(self, use_existing_data: bool = False, run_backtest: bool = False):
+        """
+        Запуск полного цикла.
+        Args:
+            use_existing_data: Если True, берет данные из локальной БД (быстро).
+            run_backtest: Если True, запускает симуляцию стратегий на истории.
+        """
         try:
             logger.info("=" * 60)
-            logger.info("🚀 ЗАПУСК CRYPTO ALADDIN PIPELINE")
+            logger.info("🚀 ЗАПУСК CRYPTO ALADDIN: PC EDITION")
+            logger.info(f"⚙️  Режим: {'DEV (Из базы)' if use_existing_data else 'PROD (Обновление данных)'}")
+            logger.info(f"📈 Бэктест: {'Включен' if run_backtest else 'Выключен'}")
             logger.info("=" * 60)
             
-            # --- Шаг 1: Рыночные данные ---
-            logger.info("[1/7] Получение текущих рыночных данных...")
-            market_data = self.fetcher.fetch_coingecko_market_data()
-            
-            if market_data.empty:
-                logger.error("❌ Остановка: Не удалось получить рыночные данные.")
-                return
-            
-            self.db_handler.save_market_data(market_data)
-            
-            # --- Шаг 2: Фильтрация ---
-            logger.info("[2/7] Фильтрация и категоризация активов...")
-            filtered_data = self.filter.apply_all_filters(market_data, exclude_stables=True)
-            
-            if filtered_data.empty:
-                logger.error("❌ Остановка: Нет активов, прошедших фильтры.")
-                return
-                
-            self.db_handler.save_filtered_assets(filtered_data)
-            
-            # --- Шаг 3: История цен ---
-            coin_ids = filtered_data['coin_id'].tolist()
-            logger.info(f"[3/7] Сбор истории цен для {len(coin_ids)} активов...")
-            
-            historical_data = self.fetcher.fetch_all_historical_data(
-                coin_ids, 
-                days=Config.HISTORICAL_DAYS
-            )
-            
-            historical_data = self._ensure_btc_history(historical_data, coin_ids)
-            self.db_handler.save_historical_data(historical_data)
-            
-            # --- Шаг 4: Сбор On-Chain данных (НОВОЕ) ---
-            logger.info(f"[4/7] Сбор On-Chain метрик (Fundamental)...")
-            
-            # ВАЖНО: Добавил 'market_cap' для расчета NVT Ratio
-            coin_list_for_onchain = filtered_data[['coin_id', 'symbol', 'name', 'market_cap']].to_dict('records')
-            
-            onchain_data = self.fetcher.fetch_onchain_data(coin_list_for_onchain)
+            # Переменные для хранения данных
+            metrics_df = pd.DataFrame()
+            historical_data = {}
+            onchain_data = pd.DataFrame()
+            category_df = pd.DataFrame()
+            market_data = pd.DataFrame()
+            filtered_data = pd.DataFrame()
 
-            if not onchain_data.empty:
-                self.db_handler.save_onchain_data(onchain_data)
-                logger.info(f"On-Chain данные сохранены для {len(onchain_data)} монет")
+            # ==========================================
+            # БЛОК 1: СБОР ДАННЫХ (ETL)
+            # ==========================================
+            
+            if use_existing_data:
+                logger.info("💾 [1/7] Загрузка данных из локальной базы...")
+                try:
+                    metrics_df = self.db_handler.get_latest_metrics()
+                    
+                    # Загружаем историю для всех монет (нужно для бэктеста)
+                    # Внимание: это может быть долго, если монет много
+                    filtered_assets = self.db_handler.get_filtered_assets()
+                    if not filtered_assets.empty:
+                        coin_ids = filtered_assets['coin_id'].tolist()
+                        # Здесь предполагаем, что у db_handler есть метод пакетной загрузки
+                        # Если нет - загрузится то, что есть, или нужно реализовать get_historical_batch
+                        # Для упрощения пока грузим только метрики, а историю подтянем ниже если надо
+                        pass 
+                    
+                    # Пытаемся загрузить остальное
+                    try:
+                        # Читаем последнюю дату категорий
+                        category_df = pd.read_sql("SELECT * FROM asset_categories WHERE date = (SELECT MAX(date) FROM asset_categories)", self.db_handler.engine)
+                        onchain_data = self.db_handler.get_latest_onchain_data()
+                        market_data = self.db_handler.get_latest_market_data(days=1)
+                    except Exception as e:
+                        logger.warning(f"Часть данных не загружена из базы: {e}")
+
+                    if metrics_df.empty:
+                        logger.error("❌ Метрики в базе не найдены. Запустите с use_existing_data=False")
+                        return
+
+                except Exception as e:
+                    logger.error(f"Ошибка чтения базы: {e}")
+                    return
+
             else:
-                logger.warning("Не удалось собрать on-chain данные (возможно, лимиты API)")
+                logger.info("📡 [1/7] Сбор свежих данных с API...")
+                self.db_handler._init_db()
+                
+                # 1.1 Рыночные данные (CoinGecko)
+                market_data = self.fetcher.fetch_coingecko_market_data()
+                if market_data.empty: 
+                    logger.error("Не удалось получить рыночные данные")
+                    return
+                self.db_handler.save_market_data(market_data)
+                
+                # 1.2 Фильтрация
+                filtered_data = self.filter.apply_all_filters(market_data, exclude_stables=True)
+                self.db_handler.save_filtered_assets(filtered_data)
+                logger.info(f"Отобрано активов: {len(filtered_data)}")
+                
+                # 1.3 История цен (Deep History)
+                coin_ids = filtered_data['coin_id'].tolist()
+                historical_data = self.fetcher.fetch_all_historical_data(
+                    coin_ids, 
+                    days=Config.HISTORICAL_DAYS # Теперь 730 дней (2 года)
+                )
+                historical_data = self._ensure_btc_history(historical_data, coin_ids)
+                self.db_handler.save_historical_data(historical_data)
+                
+                # 1.4 On-Chain данные (GitHub / Messari)
+                logger.info("⛓️ Сбор On-Chain метрик...")
+                coin_list = filtered_data[['coin_id', 'symbol', 'market_cap']].to_dict('records')
+                onchain_data = self.fetcher.fetch_onchain_data(coin_list)
+                if not onchain_data.empty:
+                    self.db_handler.save_onchain_data(onchain_data)
+                
+                # 1.5 Специфичные метрики (DefiLlama / Categories)
+                logger.info("🦙 Сбор DeFi/L2 метрик (DefiLlama)...")
+                category_df = self.specific_fetcher.fetch_specific_metrics(coin_list)
+                if not category_df.empty:
+                    self.db_handler.save_category_data(category_df)
+                
+                # 1.6 Расчет технических метрик
+                logger.info("🧮 Расчет технических индикаторов...")
+                metrics_df = self.processor.calculate_all_metrics(historical_data, market_data)
+                self.db_handler.save_metrics(metrics_df)
+                
+                # 1.7 Очистка
+                self.db_handler.cleanup_old_data()
+
+            # ==========================================
+            # БЛОК 2: АНАЛИЗ И СКОРИНГ
+            # ==========================================
+            logger.info("-" * 60)
+            logger.info("🧠 [2/7] ЗАПУСК SCORING ENGINE")
             
-            # --- Шаг 5: Расчет финансовых метрик ---
-            logger.info("[5/7] Расчет финансовых метрик (Volatility, Sharpe, Beta)...")
-            metrics_df = self.processor.calculate_all_metrics(
-                historical_data, 
-                market_data
+            # 2.1 Подготовка единого DataFrame
+            full_data = metrics_df.copy()
+            
+            # Мержим On-Chain
+            if not onchain_data.empty:
+                cols = ['coin_id', 'developer_score', 'messari_active_addresses']
+                exist = [c for c in cols if c in onchain_data.columns]
+                full_data = pd.merge(full_data, onchain_data[exist], on='coin_id', how='left')
+            
+            # Мержим Категории (TVL)
+            if not category_df.empty:
+                cat_cols = ['coin_id', 'category', 'tvl', 'tvl_ratio']
+                exist = [c for c in cat_cols if c in category_df.columns]
+                full_data = pd.merge(full_data, category_df[exist], on='coin_id', how='left')
+
+            # 2.2 Расчет Факторов (Z-Scores)
+            factors_df = FactorCalculator.calculate_all_factors(full_data, category_df)
+            
+            # 2.3 Определение Режима Рынка
+            # Если historical_data пуст (режим из базы), попробуем загрузить BTC отдельно
+            if not historical_data and use_existing_data:
+                try:
+                    btc_hist = self.db_handler.get_historical_data('bitcoin', days=90)
+                    historical_data = {'bitcoin': btc_hist}
+                except: pass
+
+            market_regime = MarketRegimeDetector.analyze_market_condition(
+                market_data, historical_data
             )
             
-            self.db_handler.save_metrics(metrics_df)
-            
-            # --- Шаг 6: Очистка старого ---
-            logger.info("[6/7] Очистка устаревших данных из БД...")
-            self.db_handler.cleanup_old_data(days_to_keep=365)
-            
-            # --- Шаг 7: Отчет ---
-            logger.info("[7/7] Генерация отчета...")
-            self.generate_report(metrics_df, filtered_data, onchain_data)
-            
-            logger.info("=" * 60)
-            logger.info("✅ ПАЙПЛАЙН УСПЕШНО ЗАВЕРШЕН")
-            logger.info("=" * 60)
-            
-        except KeyboardInterrupt:
-            logger.warning("⚠️ Процесс остановлен пользователем.")
-        except Exception as e:
-            logger.error(f"💥 Критическая ошибка в пайплайне: {e}", exc_info=True)
-    
-    def generate_report(self, metrics_df: pd.DataFrame, filtered_data: pd.DataFrame, onchain_df: pd.DataFrame = None):
-        """Генерация текстового отчета"""
-        try:
-            timestamp = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            report_lines = [
-                "\n" + "=" * 60,
-                f"ОТЧЕТ CRYPTO ALADDIN | {timestamp}",
-                "=" * 60,
-                f"Всего проанализировано: {len(filtered_data)} активов",
-                f"Финансовые метрики:     {len(metrics_df)} активов",
-                f"On-Chain данные:        {len(onchain_df) if onchain_df is not None else 0} активов",
-                "\n🏆 ТОП-10 АКТИВОВ ПО КАПИТАЛИЗАЦИИ:",
-                "-" * 65,
-                f"{'Symbol':<10} {'Name':<18} {'Cap ($B)':<10} {'Price ($)':<10}"
-            ]
-            
-            # Топ-10 Cap
-            top_10 = filtered_data.sort_values('market_cap', ascending=False).head(10)
-            for _, row in top_10.iterrows():
-                cap_b = row.get('market_cap', 0) / 1e9
-                price = row.get('price', 0)
-                report_lines.append(f"{row['symbol']:<10} {str(row['name'])[:18]:<18} {cap_b:<10.2f} {price:<10.4f}")
-            
-            # Топ по Шарпу
-            if not metrics_df.empty and 'sharpe_90d' in metrics_df:
-                report_lines.extend([
-                    "\n💎 ЛИДЕРЫ ПО КОЭФФИЦИЕНТУ ШАРПА (Эффективность):", 
-                    "-" * 65,
-                    f"{'Symbol':<10} {'Sharpe':<10} {'Vol (30d)':<12} {'Return (7d)':<12}"
-                ])
-                top_sharpe = metrics_df.sort_values('sharpe_90d', ascending=False).head(5)
-                for _, row in top_sharpe.iterrows():
-                    vol = row.get('volatility_30d', 0)
-                    ret = row.get('return_7d', 0)
-                    report_lines.append(f"{row['symbol']:<10} {row['sharpe_90d']:<10.2f} {vol:<12.2%} {ret:<12.2%}")
+            active_strategy_name = market_regime['suggested_strategy']
+            logger.info(f"🛡 РЕЖИМ РЫНКА: {market_regime['regime'].upper()}")
+            logger.info(f"🎯 ВЫБРАНА СТРАТЕГИЯ: {active_strategy_name}")
 
-            # --- НОВОЕ: Отчет по On-Chain ---
-            if onchain_df is not None and not onchain_df.empty:
-                report_lines.extend(["\n🏗️ ЛИДЕРЫ РАЗРАБОТКИ (Developer Score):", "-" * 65])
+            # 2.4 Загрузка конфигурации стратегий
+            strat_path = Config.BASE_DIR / "config" / "strategies.yaml"
+            if strat_path.exists():
+                self.strategy_loader.load_custom_strategies(str(strat_path))
+            
+            # 2.5 Расчет Баллов (Scoring)
+            scores = self.score_calculator.calculate_dual_scores(
+                factors_df,
+                long_strat=active_strategy_name,
+                short_strat='short_speculative'
+            )
+            
+            # 2.6 Ранжирование (Ranking)
+            final_ranking = AssetRanker.create_combined_ranking(scores['long'], scores['short'])
+            
+            # 2.7 Сохранение
+            self.db_handler.save_scores(final_ranking)
+            
+            # 2.8 Отчет в лог
+            logger.info(AssetRanker.get_final_report_data(final_ranking))
+            self.save_full_report(final_ranking, full_data, active_strategy_name)
+
+            # ==========================================
+            # БЛОК 3: БЭКТЕСТИНГ (Vectorized)
+            # ==========================================
+            if run_backtest:
+                logger.info("-" * 60)
+                logger.info("🕹️ [3/7] ЗАПУСК БЭКТЕСТА (Backtesting Engine)")
                 
-                # Проверяем, есть ли колонка developer_score
-                if 'developer_score' in onchain_df.columns:
-                    top_dev = onchain_df.sort_values('developer_score', ascending=False).head(5)
-                    for _, row in top_dev.iterrows():
-                        symbol = row.get('symbol', 'UNK')
-                        score = row.get('developer_score', 0)
-                        report_lines.append(f"{symbol:<10} Dev Score: {score:.1f}")
-                else:
-                    report_lines.append("(Нет данных о разработчиках)")
-
-            report_lines.append("=" * 60)
-            
-            report_text = "\n".join(report_lines)
-            logger.info(report_text)
-            
-            # Сохранение
-            report_dir = Config.BASE_DIR / "data" / "reports"
-            report_dir.mkdir(parents=True, exist_ok=True)
-            
-            with open(report_dir / "latest_report.txt", 'w', encoding='utf-8') as f:
-                f.write(report_text)
-                
-        except Exception as e:
-            logger.error(f"Ошибка генерации отчета: {e}", exc_info=True)
-
-def main():
-    if not Config.DB_DIR.exists():
-        Config.setup_directories()
-    pipeline = CryptoAladdinPipeline()
-    pipeline.run_full_pipeline()
-
-if __name__ == "__main__":
-    main()
+                # Если истории нет в памяти (режим use_existing_data), нужно её загрузить
+                if not historical_data:
+                    logger.info("Загрузка истории из базы для бэктеста (это может

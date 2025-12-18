@@ -28,7 +28,7 @@ class Config:
     MIN_VOLUME_24H = 10_000_000
 
     # --- Основной сбор данных ---
-    HISTORICAL_DAYS = 90
+    HISTORICAL_DAYS = 365 * 2
     UPDATE_INTERVAL_HOURS = 24
     
     # --- API Keys (Базовые) ---
@@ -95,6 +95,46 @@ class Config:
         directories = [cls.RAW_DATA_DIR, cls.PROCESSED_DATA_DIR, cls.DB_DIR, cls.LOG_DIR]
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
+            
+            
+# config/settings.py
 
+# ... (существующий код)
+
+# ==================== КЛАССИФИКАЦИЯ АКТИВОВ ====================
+# Расширяем списки популярных монет для тестов
+    BLOCKCHAIN_CATEGORIES = {
+    'L1': ['bitcoin', 'ethereum', 'solana', 'avalanche-2', 'cardano', 'polkadot', 'binancecoin', 'tron'],
+    'L2': ['arbitrum', 'optimism', 'polygon-pos', 'base', 'mantle', 'starknet'],
+    'DeFi': ['uniswap', 'aave', 'maker', 'lido-dao', 'curve-dao-token', 'pendle', 'gmx'],
+    'NFT_Gaming': ['apecoin', 'axie-infinity', 'the-sandbox', 'decentraland', 'gala', 'render-token'],
+    'Meme': ['dogecoin', 'shiba-inu', 'pepe', 'bonk', 'floki', 'wif']
+}
+
+# ==================== СПЕЦИФИЧНЫЕ ИСТОЧНИКИ ====================
+    SPECIFIC_DATA_SOURCES = {
+    'defillama': True,       # TVL, Fees, Revenue (Бесплатно!)
+    'tokenterminal': False,  # Нужен ключ (дорого)
+    'dappradar': False,      # Нужен ключ
+    'lunarcrush': False      # Нужен ключ
+}
+
+# Метрики, которые мы будем искать в DefiLlama
+    DEFILLAMA_METRICS = [
+    'tvl',           # Total Value Locked
+    'mcap',          # Market Cap (для сверки)
+    'fees',          # Fees (24h)
+    'revenue',       # Revenue (24h)
+    'volume'         # DEX Volume (24h)
+]
+
+
+# Настройки Бэктеста
+    BACKTEST_CONFIG = {
+    'initial_capital': 10000,  # $10,000 старт
+    'fee_rate': 0.001,         # 0.1% комиссия биржи
+    'rebalance_period': 7,     # Ребалансировка раз в 7 дней
+    'top_n': 10                # Сколько монет держим в портфеле
+}
 # Инициализация
 Config.setup_directories()

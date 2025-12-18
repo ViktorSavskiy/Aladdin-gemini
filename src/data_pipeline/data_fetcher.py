@@ -120,17 +120,32 @@ class DataFetcher:
 
     def fetch_historical_data(self, coin_id: str, days: int = 90) -> pd.DataFrame:
         """Получение истории для одной монеты"""
-        url = f"{self.cg_base_url}/coins/{coin_id}/market_chart"
-        params = {"vs_currency": "usd", "days": days, "interval": "daily"}
         
+        # CoinGecko API: если дней > 365, лучше использовать 'max', 
+        # чтобы получить полные данные с суточным интервалом
+        days_param = 'max' if days > 365 else str(days)
+        
+        url = f"{self.cg_base_url}/coins/{coin_id}/market_chart"
+        params = {
+            "vs_currency": "usd",
+            "days": days_param,
+            "interval": "daily"
+        }
+        
+        # Делаем запрос
         data = self._make_request(url, params)
+        
+        # Обязательная пауза
         time.sleep(self.cg_rate_limit)
         
-        if not data: return pd.DataFrame()
+        if not data:
+            return pd.DataFrame()
+            
         try:
             prices = pd.DataFrame(data['prices'], columns=['timestamp', 'price'])
             prices['date'] = pd.to_datetime(prices['timestamp'], unit='ms').dt.date
             
+            # Добавляем объемы, если есть (важно для NVT)
             if 'total_volumes' in data:
                 volumes = pd.DataFrame(data['total_volumes'], columns=['timestamp', 'volume'])
                 volumes['date'] = pd.to_datetime(volumes['timestamp'], unit='ms').dt.date
@@ -138,22 +153,50 @@ class DataFetcher:
             
             prices['coin_id'] = coin_id
             prices = prices.drop('timestamp', axis=1)
+            
+            # Фильтруем по количеству дней (если API вернул слишком много)
+            # Например, 'max' вернул 10 лет, а нам нужно 2 года
+            if isinstance(days, int) and days < 3000:
+                cutoff_date = (datetime.now() - timedelta(days=days)).date()
+                prices = prices[prices['date'] >= cutoff_date]
+            
             return prices
+            
         except Exception as e:
             logger.error(f"Ошибка парсинга истории {coin_id}: {e}")
             return pd.DataFrame()
 
-    def fetch_all_historical_data(self, coin_ids: List[str], days: int = 90) -> Dict[str, pd.DataFrame]:
+    def fetch_all_historical_data(self, coin_ids: List[str], days: int = None) -> Dict[str, pd.DataFrame]:
+        """
+        Сбор истории для списка монет.
+        Args:
+            days: Количество дней (если None, берется из Config.HISTORICAL_DAYS)
+        """
+        # Если days не передан, берем из конфига (там теперь 730 или больше)
+        if days is None:
+            days = Config.HISTORICAL_DAYS
+            
         historical_data = {}
         total = len(coin_ids)
-        logger.info(f"Начинаем сбор истории для {total} монет. Задержка: {self.cg_rate_limit} сек.")
+        
+        logger.info(f"📚 Начинаем сбор ГЛУБОКОЙ истории ({days} дн.) для {total} монет...")
+        logger.info(f"⏱️ Задержка между запросами: {self.cg_rate_limit:.1f} сек.")
         
         for i, coin_id in enumerate(coin_ids, 1):
             if i % 5 == 0 or i == 1:
-                logger.info(f"⏳ Прогресс: {i}/{total} ({coin_id})...")
+                logger.info(f"⏳ История: {i}/{total} ({coin_id})...")
+            
+            # Вызываем метод для одной монеты (который мы обновили ранее)
             df = self.fetch_historical_data(coin_id, days)
+            
             if not df.empty:
                 historical_data[coin_id] = df
+            else:
+                logger.warning(f"⚠️ Пустая история для {coin_id}")
+            
+            # Пауза уже есть внутри fetch_historical_data, но можно добавить проверку
+            # на случай если fetch_historical_data вернул ошибку мгновенно
+            
         return historical_data
 
     # --- НОВОЕ: Метод-обертка для сбора On-Chain данных ---

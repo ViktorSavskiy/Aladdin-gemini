@@ -100,21 +100,40 @@ class OnChainFetcher:
             return {}
 
     def fetch_coingecko_dev_stats(self, coin_id: str) -> Dict[str, float]:
+        """Получение Developer Score и сырых данных с CoinGecko"""
         if not self.sources['coingecko']['enabled']: return {}
+        
         url = f"{self.sources['coingecko']['base_url']}/coins/{coin_id}"
         params = {
             'localization': 'false', 'tickers': 'false', 
             'market_data': 'false', 'community_data': 'false', 
             'developer_data': 'true', 'sparkline': 'false'
         }
+        
         try:
             data = self._make_request(url, params=params)
             if not data: return {}
+            
             dev = data.get('developer_data', {})
-            score = (dev.get('forks', 0)*2 + dev.get('stars', 0)*0.5 + 
-                     dev.get('commit_count_4_weeks', 0)*5 + dev.get('pull_requests_merged', 0)*3)
-            return {'developer_score': score}
-        except:
+            
+            # 1. Считаем общий балл (как раньше)
+            score = (
+                dev.get('forks', 0) * 2 +
+                dev.get('stars', 0) * 0.5 +
+                dev.get('commit_count_4_weeks', 0) * 5 +
+                dev.get('pull_requests_merged', 0) * 3
+            )
+            
+            # 2. Возвращаем и балл, и детали (НОВОЕ)
+            return {
+                'developer_score': score,
+                'coingecko_stars': dev.get('stars', 0),
+                'coingecko_forks': dev.get('forks', 0),
+                'coingecko_commit_count_4_weeks': dev.get('commit_count_4_weeks', 0)
+            }
+            
+        except Exception as e:
+            # logger.debug(f"Dev stats error: {e}") # Можно раскомментировать для отладки
             return {}
 
     def fetch_all_onchain_data(self, coin_list: List[Dict]) -> pd.DataFrame:
@@ -134,10 +153,11 @@ class OnChainFetcher:
                 row['messari_transaction_volume'] = messari.get('transaction_volume')
                 row['messari_transaction_count'] = messari.get('transaction_count')
             
-            # 2. CoinGecko
-            dev = self.fetch_coingecko_dev_stats(coin_id)
-            if dev:
-                row['developer_score'] = dev.get('developer_score')
+            # 2. CoinGecko Developer Stats
+            dev_data = self.fetch_coingecko_dev_stats(coin_id)
+            if dev_data:
+                # Обновляем строку всеми полученными полями
+                row.update(dev_data)
 
             clean_row = {k: v for k, v in row.items() if v is not None}
             results.append(clean_row)
