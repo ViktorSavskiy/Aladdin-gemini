@@ -234,4 +234,119 @@ class CryptoAladdinPipeline:
                 
                 # Если истории нет в памяти (режим use_existing_data), нужно её загрузить
                 if not historical_data:
-                    logger.info("Загрузка истории из базы для бэктеста (это может
+                    logger.info("Загрузка истории из базы для бэктеста (это может занять время)...")
+                    # Загружаем историю для монет из рейтинга (чтобы не грузить всё)
+                    top_coins = final_ranking['coin_id'].tolist()
+                    # Тут нужен метод пакетной загрузки, или цикл
+                    historical_data = self.db_handler.get_historical_data_batch(top_coins, days=730)
+                    # Если метода batch нет, можно использовать fetcher в цикле (но это API)
+                    # Или написать в db_handler метод get_historical_data_batch
+                
+                if historical_data:
+                    # 3.1 Подготовка матрицы цен
+                    price_matrix = FactorCalculator.prepare_price_matrix(historical_data)
+                    
+                    if not price_matrix.empty:
+                        # 3.2 Расчет исторических факторов (Rolling)
+                        logger.info("Расчет скользящих факторов...")
+                        rolling_factors = FactorCalculator.calculate_rolling_factors(price_matrix)
+                        
+                        # 3.3 Инициализация движка
+                        engine = BacktestEngine(price_matrix)
+                        
+                        # 3.4 Тест стратегий
+                        strategies_to_test = ['balanced', 'bull_run', 'bear_defense', 'defi_value']
+                        # Добавляем текущую активную
+                        if active_strategy_name not in strategies_to_test:
+                            strategies_to_test.append(active_strategy_name)
+                            
+                        logger.info("\n📊 РЕЗУЛЬТАТЫ СИМУЛЯЦИИ (2 года):")
+                        logger.info(f"{'Strategy':<15} {'Return':<10} {'Sharpe':<8} {'MaxDD':<8}")
+                        logger.info("-" * 45)
+                        
+                        for strat in strategies_to_test:
+                            res = engine.run_backtest(rolling_factors, strat)
+                            logger.info(
+                                f"{strat:<15} {res['total_return']:<10.1%} {res['sharpe_ratio']:<8.2f} {res['max_drawdown']:<8.1%}"
+                            )
+                        logger.info("-" * 45)
+                    else:
+                        logger.warning("Матрица цен пуста, бэктест невозможен.")
+                else:
+                    logger.warning("Нет исторических данных для бэктеста.")
+
+            logger.info("=" * 60)
+            logger.info("✅ РАБОТА ЗАВЕРШЕНА")
+            logger.info("=" * 60)
+            
+        except Exception as e:
+            logger.error(f"Критическая ошибка в пайплайне: {e}", exc_info=True)
+
+    def save_full_report(self, ranking_df, full_data, strategy_name):
+        """Сохранение подробного отчета в файл"""
+        try:
+            report_path = Config.DATA_DIR / "reports" / "final_report.txt"
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write(f"CRYPTO ALADDIN REPORT | {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+                f.write(f"Active Strategy: {strategy_name}\n")
+                f.write("="*60 + "\n\n")
+                
+                # Статистика по секторам
+                if 'category' in full_data.columns:
+                    f.write("SECTOR DISTRIBUTION:\n")
+                    counts = full_data['category'].value_counts()
+                    for cat, count in counts.items():
+                        f.write(f"- {cat}: {count}\n")
+                    f.write("\n")
+
+                f.write("🏆 TOP BUY RECOMMENDATIONS (Long Score):\n")
+                f.write("-" * 60 + "\n")
+                f.write(f"{'Symbol':<8} {'Score':<8} {'Net':<8} {'Signal':<12} {'Driver'}\n")
+                
+                top_buy = ranking_df.head(15)
+                for _, row in top_buy.iterrows():
+                    f.write(
+                        f"{row['symbol']:<8} {row['score_long']:<8.1f} {row['net_score']:<8.1f} "
+                        f"{row['signal']:<12} {row['primary_driver']}\n"
+                    )
+                
+                f.write("\n🐻 TOP SELL/HEDGE CANDIDATES (Short Score):\n")
+                f.write("-" * 60 + "\n")
+                top_sell = ranking_df.sort_values('score_short', ascending=False).head(10)
+                for _, row in top_sell.iterrows():
+                    f.write(
+                        f"{row['symbol']:<8} {row['score_short']:<8.1f} {row['net_score']:<8.1f} "
+                        f"{row['signal']:<12} {row['primary_driver']}\n"
+                    )
+
+            logger.info(f"📄 Полный отчет сохранен: {report_path}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка сохранения отчета: {e}")
+
+def main():
+    try:
+        # Проверка структуры папок
+        Config.setup_directories()
+        
+        pipeline = CryptoAladdinPipeline()
+        
+        # --- НАСТРОЙКИ ЗАПУСКА ---
+        # use_existing_data=True  -> Использовать базу (Быстро, для отладки)
+        # use_existing_data=False -> Скачать всё новое (Долго, для продакшена)
+        # run_backtest=True       -> Запустить симуляцию на истории
+        
+        pipeline.run_full_pipeline(
+            use_existing_data=False, # Первый раз на ПК ставим False
+            run_backtest=True        # Включаем мощный бэктест
+        )
+        
+    except KeyboardInterrupt:
+        logger.info("Программа остановлена пользователем")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+
+if __name__ == "__main__":
+    main()

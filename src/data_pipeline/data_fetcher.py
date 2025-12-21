@@ -1,14 +1,13 @@
 import pandas as pd
 import requests
 import time
-from datetime import datetime
+# --- ИСПРАВЛЕНИЕ: Добавлен timedelta ---
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import ccxt
 
 from config.settings import Config
 from src.utils.logger import logger
-
-# --- НОВОЕ: Импорт сборщика On-Chain данных ---
 from src.data_pipeline.onchain_fetcher import OnChainFetcher
 
 class DataFetcher:
@@ -22,16 +21,16 @@ class DataFetcher:
         })
         
         self.cg_base_url = "https://api.coingecko.com/api/v3"
-        api_key = Config.COINGECKO_API_KEY
         
-        if api_key:
-            self.session.headers.update({'x-cg-demo-api-key': api_key})
+        # --- ВАЖНО: УДАЛЯЕМ ЛЮБЫЕ КЛЮЧИ ЧТОБЫ ИЗБЕЖАТЬ 401 ОШИБКИ ---
+        self.session.headers.pop('x-cg-demo-api-key', None)
+        self.session.headers.pop('x-cg-pro-api-key', None)
         
-        # Расчет задержки
-        requests_per_min = Config.API_RATE_LIMITS.get('coingecko', 5)
-        self.cg_rate_limit = (60 / requests_per_min) + 1.0 
+        logger.info("ℹ️ CoinGecko: Работаем в БЕСПЛАТНОМ режиме (ключи отключены).")
         
-        # Инициализация Binance
+        # Безопасная задержка для бесплатного режима
+        self.cg_rate_limit = 12.0 
+        
         self.binance = None
         if Config.DATA_SOURCES.get("binance"):
             try:
@@ -43,7 +42,6 @@ class DataFetcher:
             except Exception as e:
                 logger.error(f"Ошибка инициализации Binance: {e}")
 
-        # --- НОВОЕ: Инициализация On-Chain Fetcher ---
         try:
             self.onchain_fetcher = OnChainFetcher()
         except Exception as e:
@@ -52,10 +50,21 @@ class DataFetcher:
 
     def _make_request(self, url: str, params: Dict, retries: int = 3) -> Optional[Dict]:
         """Внутренний метод для запросов с УМНОЙ паузой"""
+        
+        # Гарантируем отсутствие ключа
+        if 'x-cg-demo-api-key' in self.session.headers:
+            self.session.headers.pop('x-cg-demo-api-key')
+        
         for attempt in range(retries):
             try:
                 response = self.session.get(url, params=params, timeout=30)
                 
+                # Обработка 401 (Unauthorized)
+                if response.status_code == 401:
+                    logger.error("⛔ Ошибка 401: Сброс заголовков...")
+                    self.session.headers = {'User-Agent': 'CryptoAladdin/1.0'}
+                    continue
+
                 if response.status_code == 429:
                     logger.warning(f"🛑 Лимит API (429). Ждем 65 секунд...")
                     time.sleep(65)
@@ -71,7 +80,6 @@ class DataFetcher:
         return None
 
     def fetch_coingecko_market_data(self, pages: int = 4) -> pd.DataFrame:
-        """Получение данных о рынке (Top N монет)"""
         logger.info("Сбор рыночных данных с CoinGecko...")
         url = f"{self.cg_base_url}/coins/markets"
         base_params = {
@@ -121,8 +129,7 @@ class DataFetcher:
     def fetch_historical_data(self, coin_id: str, days: int = 90) -> pd.DataFrame:
         """Получение истории для одной монеты"""
         
-        # CoinGecko API: если дней > 365, лучше использовать 'max', 
-        # чтобы получить полные данные с суточным интервалом
+        # CoinGecko API: используем 'max' для длинной истории
         days_param = 'max' if days > 365 else str(days)
         
         url = f"{self.cg_base_url}/coins/{coin_id}/market_chart"
@@ -132,10 +139,7 @@ class DataFetcher:
             "interval": "daily"
         }
         
-        # Делаем запрос
         data = self._make_request(url, params)
-        
-        # Обязательная пауза
         time.sleep(self.cg_rate_limit)
         
         if not data:
@@ -145,7 +149,6 @@ class DataFetcher:
             prices = pd.DataFrame(data['prices'], columns=['timestamp', 'price'])
             prices['date'] = pd.to_datetime(prices['timestamp'], unit='ms').dt.date
             
-            # Добавляем объемы, если есть (важно для NVT)
             if 'total_volumes' in data:
                 volumes = pd.DataFrame(data['total_volumes'], columns=['timestamp', 'volume'])
                 volumes['date'] = pd.to_datetime(volumes['timestamp'], unit='ms').dt.date
@@ -154,9 +157,9 @@ class DataFetcher:
             prices['coin_id'] = coin_id
             prices = prices.drop('timestamp', axis=1)
             
-            # Фильтруем по количеству дней (если API вернул слишком много)
-            # Например, 'max' вернул 10 лет, а нам нужно 2 года
+            # --- ФИЛЬТРАЦИЯ ПО ДАТАМ (ТУТ БЫЛА ОШИБКА) ---
             if isinstance(days, int) and days < 3000:
+                # Теперь timedelta импортирован и ошибки не будет
                 cutoff_date = (datetime.now() - timedelta(days=days)).date()
                 prices = prices[prices['date'] >= cutoff_date]
             
@@ -167,18 +170,11 @@ class DataFetcher:
             return pd.DataFrame()
 
     def fetch_all_historical_data(self, coin_ids: List[str], days: int = None) -> Dict[str, pd.DataFrame]:
-        """
-        Сбор истории для списка монет.
-        Args:
-            days: Количество дней (если None, берется из Config.HISTORICAL_DAYS)
-        """
-        # Если days не передан, берем из конфига (там теперь 730 или больше)
         if days is None:
             days = Config.HISTORICAL_DAYS
             
         historical_data = {}
         total = len(coin_ids)
-        
         logger.info(f"📚 Начинаем сбор ГЛУБОКОЙ истории ({days} дн.) для {total} монет...")
         logger.info(f"⏱️ Задержка между запросами: {self.cg_rate_limit:.1f} сек.")
         
@@ -186,30 +182,19 @@ class DataFetcher:
             if i % 5 == 0 or i == 1:
                 logger.info(f"⏳ История: {i}/{total} ({coin_id})...")
             
-            # Вызываем метод для одной монеты (который мы обновили ранее)
             df = self.fetch_historical_data(coin_id, days)
-            
             if not df.empty:
                 historical_data[coin_id] = df
             else:
+                # Если история пустая - это может быть 429 или сбой запроса
                 logger.warning(f"⚠️ Пустая история для {coin_id}")
-            
-            # Пауза уже есть внутри fetch_historical_data, но можно добавить проверку
-            # на случай если fetch_historical_data вернул ошибку мгновенно
-            
+                
         return historical_data
 
-    # --- НОВОЕ: Метод-обертка для сбора On-Chain данных ---
     def fetch_onchain_data(self, coin_list: List[Dict]) -> pd.DataFrame:
-        """
-        Получение on-chain данных для списка монет через интегрированный OnChainFetcher.
-        Args:
-            coin_list: Список словарей [{'coin_id': '...', 'symbol': '...', ...}]
-        """
         if not self.onchain_fetcher:
             logger.error("OnChainFetcher не инициализирован")
             return pd.DataFrame()
-            
         try:
             logger.info("Запуск сбора on-chain данных...")
             return self.onchain_fetcher.fetch_all_onchain_data(coin_list)

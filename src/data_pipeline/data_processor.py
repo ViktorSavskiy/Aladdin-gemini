@@ -164,6 +164,8 @@ class DataProcessor:
 
         # --- Перебор активов ---
         # Создаем маппинг coin_id -> row из market_data для быстрого доступа
+        if not market_data.empty:
+            market_data = market_data.drop_duplicates(subset=['coin_id'], keep='first')
         market_info_map = market_data.set_index('coin_id').to_dict('index')
 
         for coin_id, df in historical_data.items():

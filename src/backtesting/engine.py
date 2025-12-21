@@ -49,7 +49,7 @@ class BacktestEngine:
         # 3. Генерация Сигналов (Positions)
         # Берем только дни ребалансировки
         # shift(1) - потому что решение принимаем сегодня, а доход получаем завтра
-        positions = pd.DataFrame(0, index=self.prices.index, columns=self.prices.columns)
+        positions = pd.DataFrame(0.0, index=self.prices.index, columns=self.prices.columns, dtype=float)
         
         # Ребалансировка
         for i in range(0, len(combined_score), rebalance_days):

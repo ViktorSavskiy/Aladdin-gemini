@@ -41,7 +41,8 @@ class OnChainFetcher:
         }
         
         if self.sources['coingecko']['api_key']:
-             self.session.headers.update({'x-cg-demo-api-key': self.sources['coingecko']['api_key']})
+             # Правильный заголовок для CoinGecko Pro API
+             self.session.headers.update({'x-cg-pro-api-key': self.sources['coingecko']['api_key']})
 
         # --- ИСПРАВЛЕНИЕ: Автоматический расчет задержки ---
         # Берем лимит из настроек (например, 5). 60 / 5 = 12 секунд.
@@ -124,13 +125,26 @@ class OnChainFetcher:
                 dev.get('pull_requests_merged', 0) * 3
             )
             
-            # 2. Возвращаем и балл, и детали (НОВОЕ)
-            return {
+            # 2. Возвращаем и балл, и все доступные детали
+            result = {
                 'developer_score': score,
                 'coingecko_stars': dev.get('stars', 0),
                 'coingecko_forks': dev.get('forks', 0),
-                'coingecko_commit_count_4_weeks': dev.get('commit_count_4_weeks', 0)
+                'coingecko_commit_count_4_weeks': dev.get('commit_count_4_weeks', 0),
+                'coingecko_pull_requests_merged': dev.get('pull_requests_merged', 0),
             }
+            
+            # Добавляем дополнительные поля, если они доступны
+            if 'subscribers' in dev:
+                result['coingecko_subscribers'] = dev.get('subscribers', 0)
+            if 'total_issues' in dev:
+                result['coingecko_total_issues'] = dev.get('total_issues', 0)
+            if 'closed_issues' in dev:
+                result['coingecko_closed_issues'] = dev.get('closed_issues', 0)
+            if 'pull_request_contributors' in dev:
+                result['coingecko_pull_request_contributors'] = dev.get('pull_request_contributors', 0)
+            
+            return result
             
         except Exception as e:
             # logger.debug(f"Dev stats error: {e}") # Можно раскомментировать для отладки

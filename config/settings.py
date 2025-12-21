@@ -28,7 +28,7 @@ class Config:
     MIN_VOLUME_24H = 10_000_000
 
     # --- Основной сбор данных ---
-    HISTORICAL_DAYS = 365 * 2
+    HISTORICAL_DAYS = 365
     UPDATE_INTERVAL_HOURS = 24
     
     # --- API Keys (Базовые) ---
@@ -75,7 +75,7 @@ class Config:
 
     # --- Лимиты API ---
     API_RATE_LIMITS = {
-        "coingecko": 5,  # Консервативный лимит
+        "coingecko": 4,  # Консервативный лимит
         "messari": 5,    # Примерный лимит для Messari Free
     }
 

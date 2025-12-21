@@ -1,6 +1,7 @@
 import pandas as pd
 import json
 from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 import logging
@@ -16,8 +17,32 @@ class DatabaseHandler:
     
     def __init__(self, db_path: str = None):
         self.db_path = db_path or Config.DB_PATH
-        self.engine = create_engine(f'sqlite:///{self.db_path}')
+        # Используем NullPool для SQLite, чтобы избежать блокировок файла
+        # NullPool не использует пул соединений, каждое соединение создается заново
+        self.engine = create_engine(
+            f'sqlite:///{self.db_path}',
+            poolclass=NullPool,
+            connect_args={'check_same_thread': False}
+        )
         self._init_db()
+    
+    def close(self):
+        """
+        Закрывает все соединения с базой данных.
+        Вызывайте этот метод перед удалением файла базы данных.
+        """
+        if self.engine:
+            self.engine.dispose(close=True)
+            # Используем только ASCII для совместимости с Windows
+            logger.info(f"Database {self.db_path} closed")
+    
+    def __enter__(self):
+        """Поддержка контекстного менеджера (with statement)"""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Автоматическое закрытие при выходе из контекста"""
+        self.close()
 
     def _init_db(self):
         """Инициализация всех таблиц"""
@@ -73,14 +98,55 @@ class DatabaseHandler:
         """))
 
     def _create_onchain_tables(self, conn):
-        # ... (код onchain_metrics, onchain_daily_snapshot без изменений) ...
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS onchain_metrics (
-                coin_id TEXT NOT NULL, symbol TEXT, date DATE NOT NULL,
-                messari_active_addresses REAL, messari_transaction_volume REAL,
-                messari_transaction_count REAL,
+                coin_id TEXT NOT NULL, 
+                symbol TEXT, 
+                date DATE NOT NULL,
+                
+                -- Messari
+                messari_active_addresses REAL, 
+                messari_transaction_volume REAL,
+                messari_transaction_count REAL, 
+                messari_transaction_fees REAL,
+                
+                -- CoinGecko (ВОТ ЭТИХ КОЛОНОК НЕ ХВАТАЛО)
+                coingecko_forks INTEGER, 
+                coingecko_stars INTEGER,
+                coingecko_subscribers INTEGER, 
+                coingecko_total_issues INTEGER,
+                coingecko_closed_issues INTEGER, 
+                coingecko_commit_count_4_weeks INTEGER,
+                coingecko_pull_requests_merged INTEGER,
+                coingecko_pull_request_contributors INTEGER,
+                
+                -- Расчетные
+                estimated_active_addresses REAL, 
                 developer_score REAL,
+                
+                -- Оценки
+                score_network_activity REAL, 
+                score_transaction_volume REAL,
+                score_total_onchain_score REAL, 
+                
                 last_updated DATETIME,
+                PRIMARY KEY (coin_id, date)
+            )
+        """))
+        
+        # Таблица Snapshot (обычно не менялась, но на всякий случай)
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS onchain_daily_snapshot (
+                coin_id TEXT NOT NULL, 
+                symbol TEXT, 
+                date DATE NOT NULL,
+                onchain_health_score REAL, 
+                network_activity_score REAL,
+                economic_activity_score REAL, 
+                development_score REAL,
+                ranking_position INTEGER, 
+                percentile REAL, 
+                timestamp DATETIME,
                 PRIMARY KEY (coin_id, date)
             )
         """))
@@ -135,7 +201,7 @@ class DatabaseHandler:
 
     def _upsert_data(self, df: pd.DataFrame, table_name: str):
         if df.empty: return
-        
+        df = df.copy() 
         # Обработка сложных типов (dict/list) в JSON строку перед записью
         for col in df.columns:
             if df[col].dtype == 'object':
@@ -192,8 +258,38 @@ class DatabaseHandler:
 
     def save_onchain_data(self, onchain_df: pd.DataFrame):
         if onchain_df.empty: return
-        if 'date' in onchain_df.columns: onchain_df['date'] = pd.to_datetime(onchain_df['date']).dt.date
-        self._upsert_data(onchain_df, 'onchain_metrics')
+        df = onchain_df.copy()
+        
+        # Обработка даты
+        if 'date' in df.columns: 
+            df['date'] = pd.to_datetime(df['date']).dt.date
+        else:
+            df['date'] = datetime.now().date()
+        
+        # Добавляем last_updated, если его нет
+        if 'last_updated' not in df.columns:
+            df['last_updated'] = datetime.now()
+        
+        # Убеждаемся, что типы данных соответствуют схеме БД
+        # INTEGER колонки должны быть int (или None)
+        integer_cols = [
+            'coingecko_forks', 'coingecko_stars', 'coingecko_subscribers',
+            'coingecko_total_issues', 'coingecko_closed_issues',
+            'coingecko_commit_count_4_weeks', 'coingecko_pull_requests_merged',
+            'coingecko_pull_request_contributors'
+        ]
+        for col in integer_cols:
+            if col in df.columns:
+                try:
+                    # Преобразуем в int, пропуская NaN (SQLite примет float как int, но лучше привести явно)
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    # Заполняем NaN нулями для INTEGER полей (SQLite не любит NaN в INTEGER)
+                    df[col] = df[col].fillna(0).astype(int)
+                except (ValueError, TypeError):
+                    # Если не удалось преобразовать, оставляем как есть (SQLite обработает)
+                    pass
+        
+        self._upsert_data(df, 'onchain_metrics')
 
     def save_scores(self, scores_df: pd.DataFrame):
         if scores_df.empty: return
