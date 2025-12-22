@@ -60,7 +60,11 @@ CRYPTOQUANT_API_KEY = None
 
 # Messari (https://messari.io) - Фундаментальные метрики (есть Free tier)
 MESSARI_API_KEY = None 
-
+CRYPTOPANIC_API_KEY = ec6751c36971090d5ca8a4e0199c205a7b7ea559
 # --- Уведомления ---
 TELEGRAM_BOT_TOKEN = None
 TELEGRAM_CHAT_ID = None
+
+# BYBIT KEYS
+BYBIT_API_KEY = None
+BYBIT_API_SECRET = None
